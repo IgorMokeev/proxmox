@@ -1,7 +1,8 @@
 #!/bin/bash
 # ==============================================================================
 # Script:  cloudinit_tmpl_ubuntu2404_base.sh
-# Author:  Igor Mokeev
+# Author:  Igor Mokeev / https://github.com/IgorMokeev
+# Date:    04.11.2026
 # Purpose: Упрощенная (base) версия создания Proxmox-шаблона 
 #          Cloud-Init Ubuntu Noble (24.04 LTS).
 # ==============================================================================
@@ -12,32 +13,38 @@
 # оптимизирована для простоты и надежности за счет использования стандартных 
 # хранилищ Proxmox по умолчанию.
 #
+#
 # ТРЕБОВАНИЯ И ПОДГОТОВКА:
 # 1. Скачайте актуальный cloud-образ Ubuntu в директорию /root:
 #    wget -b https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
 # 2. Переименуйте скачанный файл в формат .qcow2:
 #    mv noble-server-cloudimg-amd64.img noble-server-cloudimg-amd64.qcow2
-# 3. Сгенерируйте SSH-ключи (если еще не созданы) и поместите данные публичного ключа 
-#    в файл: /root/configs/authorized_keys
+# 3. ОБЯЗАТЕЛЬНО: сгенерируйте SSH-ключи (если еще не созданы) и поместите 
+#    данные публичного ключа в файл: /root/configs/authorized_keys
+#    Если файл отсутствует или пуст — скрипт завершится с ошибкой.
 #
-# НАСТРОЙКА ПАРОЛЯ ПОЛЬЗОВАТЕЛЯ (Cloud-Init):
-# Пароль главного пользователя можно задать одним из следующих способов:
-# Хэш из защищенного файла:
-#   CI_PASSWORD_HASH=$(cat /root/configs/cipass.hash)
-#   (Файл должен иметь права доступа 600: chmod 600 /root/configs/cipass.hash)
-# Генерация собственного хэша:
-#   Выполните в CLI Proxmox: openssl passwd -6 'Ваш_Надежный_Пароль'
-#   Скопируйте вывод и вставьте его в переменную CI_PASSWORD_HASH внутри скрипта.
-# Жесткое кодирование в скрипте (Не рекомендуется для продакшена):
-#   qm set $VMID --cipassword 'Pa$$w0rd'
-# Значение по умолчанию:
-#   Используется предустановленный хэш для пароля 'Pa$$w0rd'.
+# НАСТРОЙКА ПОЛЬЗОВАТЕЛЯ (Cloud-Init):
+# Пользователь по умолчанию - la (local admin)
+# Пароль в VM по умолчанию - Pa$$w0rd
+# Чтобы задать свой пароль, сгенерируйте хэш SHA-512 и подставьте его
+# в переменную CI_PASS_HASH в разделе НАСТРОЙКИ (значение в одинарных кавычках):
+#   1. Выполните в CLI Proxmox: openssl passwd -6 'Ваш_Надежный_Пароль'
+#   2. Скопируйте вывод целиком (начинается с $6$...) и вставьте его:
+#        CI_PASS_HASH='$6$...ваш_хэш...'
+#   Одинарные кавычки обязательны, иначе bash раскроет символы $ в хэше.
+#
+# Альтернативный способ (рекомендуется, не светит хэш в скрипте):
+# положите хэш в файл /root/configs/cipass.hash и выставьте права:
+#   chmod 600 /root/configs/cipass.hash
+# Если файл существует и не пуст, он имеет приоритет над CI_PASS_HASH.
 #
 # ОГРАНИЧЕНИЯ (Осознанные, ради простоты и скорости):
 #   - Диски ВМ и шаблоны создаются ТОЛЬКО на хранилище 'local-lvm'.
 #   - Файлы snippets (cloud-init) сохраняются ТОЛЬКО на хранилище 'local'.
 #   - Не требуется выбор типа хранилища, формата диска (raw/qcow2) 
 #     или формата EFI-диска (на LVM-thin всё работает из коробки).
+# -------------------------------------------------
+#
 #   * Если вам требуется использование внешних или нестандартных хранилищ, 
 #     воспользуйтесь "ext" версией данного скрипта (учтите, что скорость 
 #     операций на внешних хранилищах может быть значительно ниже).
@@ -49,7 +56,8 @@
 # ==============================================================================
 
 # Жёсткий режим: ошибка / неустановленная переменная / ошибка пайпа — выход
-set -euo pipefail
+# -E: ERR/EXIT-ловушки наследуются функциями
+set -Eeuo pipefail
 
 # ============================================================
 # НАСТРОЙКИ (при необходимости правьте здесь)
@@ -73,13 +81,15 @@ readonly MACHINE_TYPE="q35"
 readonly BIOS_TYPE="ovmf"
 
 # Cloud-init параметры
-readonly CI_USERNAME="r00t"
+readonly CI_USERNAME="la"
 readonly CI_TIMEZONE="Europe/Moscow"
 readonly SNIPPET_YAML="cloud-noble-server.yaml"
 
 # Пароль главного пользователя (хэш SHA-512)
-# Сгенерировать: openssl passwd -6 'Pa$$w0rd'
-readonly CI_PASS_HASH='$6$wBxZDyxv8VMoDBLY$ty9jnprnDcxS8LVQkWO4gePNOSEb.eGsezN7HYMIITSute6BWObZy9oOQtDBPrM3nHbx54Mn8rqkmTVtFrtoj0'
+# Сгенерирован с помощью openssl passwd -6 'Pa$$w0rd'
+# (не readonly: может быть переопределён из файла CI_PASS_FILE)
+CI_PASS_HASH='$6$wBxZDyxv8VMoDBLY$ty9jnprnDcxS8LVQkWO4gePNOSEb.eGsezN7HYMIITSute6BWObZy9oOQtDBPrM3nHbx54Mn8rqkmTVtFrtoj0'
+readonly CI_PASS_FILE="/root/configs/cipass.hash"
 
 # Пути
 readonly IMAGE_DIR="/root"
@@ -91,17 +101,19 @@ readonly NET_BRIDGE="vmbr0"
 readonly NET_FIREWALL="1"
 
 # Размер диска (прирост, GB)
-readonly DISK_GROW_GB="20"
+readonly DISK_GROW_GB="10"
 
 # ============================================================
-# РАБОЧИЕ ПЕРЕМЕННЫЕ (меняются через меню)
+# ТЕКУЩИЕ РАБОЧИЕ ПЕРЕМЕННЫЕ (могут меняться интерактивно)
 # ============================================================
 template_id="$TEMPLATE_ID"
 template_name="$TEMPLATE_NAME"
 ram_mb="$RAM_MB"
+image_name="$IMAGE_NAME"  # имя образа можно переопределить
 bios_type="$BIOS_TYPE"
 ci_username="$CI_USERNAME"
 snippet_dir=""        # вычисляется в preflight_checks
+vm_created=0          # 1 = ВМ создана, но шаблон ещё не готов (для отката)
 
 # ============================================================
 # HELPER ФУНКЦИИ
@@ -120,6 +132,30 @@ ask() {
     echo "${value:-$default}"
 }
 
+# Откат: если скрипт завершился с ошибкой после qm create — удаляем
+# недособранную ВМ, чтобы повторный запуск не упирался в "VM уже существует".
+cleanup_on_exit() {
+    local rc=$?
+    if [[ $rc -ne 0 && "$vm_created" == "1" ]]; then
+        log_warn "Ошибка (код ${rc}) — удаляю недособранную ВМ ${template_id}..."
+        qm destroy "$template_id" --purge --destroy-unreferenced-disks 1 \
+            || log_warn "Не удалось удалить ВМ ${template_id}, удалите вручную: qm destroy ${template_id} --purge"
+    fi
+    exit "$rc"
+}
+trap cleanup_on_exit EXIT
+
+# Проверяет, что хранилище существует и поддерживает тип контента.
+# Вывод сначала собирается в переменную: grep -q в пайпе под pipefail
+# может дать ложную ошибку из-за SIGPIPE.
+storage_has_content() {
+    local storage="$1"
+    local content="$2"
+    local list
+    list="$(pvesm status --content "$content" 2>/dev/null | awk 'NR>1 {print $1}')" || true
+    grep -qx "$storage" <<<"$list"
+}
+
 # ============================================================
 # PREFLIGHT CHECKS
 # ============================================================
@@ -127,22 +163,74 @@ ask() {
 preflight_checks() {
     log_info "Предварительные проверки..."
 
-    local image_path="${IMAGE_DIR}/${IMAGE_NAME}"
+    local image_path="${IMAGE_DIR}/${image_name}"
+    local keys_dir
+    keys_dir="$(dirname "$SSH_KEYS_PATH")"
     local probe=""
 
-    # 1. Root
+    # Root
     if [[ $EUID -ne 0 ]]; then
         log_error "Запустите скрипт от имени root."
         exit 1
     fi
 
-    # 2. Валидность ввода
+    # SSH-ключи (КРИТИЧНО: без них доступ к клонам невозможен)
+    if [[ ! -d "$keys_dir" || ! -s "$SSH_KEYS_PATH" ]]; then
+        cat <<ERR
+==========================================================
+❌ SSH-ключи не найдены: ${SSH_KEYS_PATH}
+----------------------------------------------------------
+Без публичного ключа скрипт не может создать рабочий шаблон.
+Создайте ключи и повторите запуск
+Пример:
+
+  1. Сгенерируйте пару ключей (если ещё нет):
+       ssh-keygen -t ed25519 -C "proxmox-template"
+  2. Создайте директорию и файл с публичным ключом:
+       mkdir -p ${keys_dir}
+       cat ~/.ssh/id_ed25519.pub >> ${SSH_KEYS_PATH}
+       chmod 600 ${SSH_KEYS_PATH}
+  3. Запустите скрипт повторно.
+==========================================================
+ERR
+        exit 1
+    fi
+    log_ok "SSH-ключи найдены: ${SSH_KEYS_PATH}"
+
+    # Хэш пароля: файл (если есть) имеет приоритет над значением в скрипте
+    if [[ -s "$CI_PASS_FILE" ]]; then
+        local perms
+        perms="$(stat -c '%a' "$CI_PASS_FILE")"
+        if [[ "$perms" != "600" ]]; then
+            log_warn "У ${CI_PASS_FILE} права ${perms}, рекомендуется 600."
+        fi
+        CI_PASS_HASH="$(tr -d '[:space:]' < "$CI_PASS_FILE")"
+        log_ok "Хэш пароля взят из ${CI_PASS_FILE}"
+    fi
+    if [[ ! "$CI_PASS_HASH" =~ ^\$6\$[^$]+\$[^$]+$ ]]; then
+        log_error "CI_PASS_HASH не похож на хэш SHA-512 (ожидается формат \$6\$salt\$hash)."
+        exit 1
+    fi
+
+    # Валидность ввода
     if [[ ! "$template_id" =~ ^[0-9]+$ ]]; then
         log_error "VM ID должен быть числом, получено: '${template_id}'"
         exit 1
     fi
+    if (( template_id < 100 )); then
+        log_error "VM ID должен быть >= 100, получено: '${template_id}'"
+        exit 1
+    fi
+    if [[ ! "$template_name" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]]; then
+        log_error "Имя шаблона должно быть валидным DNS-именем (буквы, цифры, '-', '.'), получено: '${template_name}'"
+        exit 1
+    fi
     if [[ ! "$ram_mb" =~ ^[0-9]+$ ]]; then
         log_error "RAM (MB) должна быть числом, получено: '${ram_mb}'"
+        exit 1
+    fi
+    if [[ ! "$ci_username" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+        log_error "Недопустимое имя пользователя Cloud-Init: '${ci_username}'"
         exit 1
     fi
     if [[ "$bios_type" != "ovmf" && "$bios_type" != "seabios" ]]; then
@@ -150,31 +238,32 @@ preflight_checks() {
         exit 1
     fi
 
-    # 3. Образ
+    # Образ
     if [[ ! -f "$image_path" ]]; then
         log_error "Образ не найден: ${image_path}"
         echo "Скачайте: wget https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
-        echo "Переименуйте: mv noble-server-cloudimg-amd64.img ${IMAGE_NAME}"
+        echo "Переименуйте: mv noble-server-cloudimg-amd64.img ${image_name}"
         exit 1
     fi
     log_ok "Образ найден: ${image_path}"
 
-    # 4. SSH ключи (не критично)
-    if [[ -f "$SSH_KEYS_PATH" ]]; then
-        log_ok "SSH-ключи найдены."
-    else
-        log_warn "SSH-ключи не найдены: ${SSH_KEYS_PATH}"
-        log_warn "Cloud-init не сможет добавить ваш ключ."
-    fi
-
-    # 5. VMID не занят
+    # VMID не занят
     if qm status "$template_id" &>/dev/null; then
         log_error "VM ${template_id} уже существует. Выберите другой ID."
         exit 1
     fi
     log_ok "VM ID ${template_id} свободен."
 
-    # 6. Директория snippets на local доступна
+    # Хранилище дисков существует и поддерживает образы дисков
+    if ! storage_has_content "$DISK_STORAGE" images; then
+        log_error "Хранилище '${DISK_STORAGE}' не найдено или не поддерживает тип контента 'Disk image'."
+        echo "На установках Proxmox с ZFS/ext4 хранилища local-lvm может не быть —"
+        echo "в этом случае используйте ext-версию скрипта."
+        exit 1
+    fi
+    log_ok "Хранилище дисков '${DISK_STORAGE}' доступно."
+
+    # Директория snippets на local доступна
     #    (pvesm path требует полный том snippets/<файл>, просим пробный файл)
     probe="$(pvesm path "${SNIPPET_STORAGE}:snippets/.probe" 2>/dev/null || true)"
     if [[ -n "$probe" ]]; then
@@ -227,7 +316,7 @@ EOF
 
 create_template() {
     log_info "Начало создания шаблона VM ${template_id} (${template_name})..."
-    local image_path="${IMAGE_DIR}/${IMAGE_NAME}"
+    local image_path="${IMAGE_DIR}/${image_name}"
 
     # 1. Базовая ВМ
     log_info "Создание базовой ВМ (BIOS: ${bios_type})..."
@@ -244,6 +333,7 @@ create_template() {
       --serial0 socket \
       --vga serial0 \
       --agent enabled=1
+    vm_created=1   # с этого момента при ошибке сработает откат
 
     # 2. EFI-диск только для UEFI (на lvm-thin формат не важен — снапшоты
     #    делает само хранилище)
@@ -295,10 +385,11 @@ create_template() {
     # 10. Превращение в шаблон
     log_info "Конвертация в шаблон..."
     qm template "$template_id"
+    vm_created=0   # шаблон готов, откат больше не нужен
 
     log_ok "Шаблон '${template_name}' (ID: ${template_id}) успешно создан! (BIOS: ${bios_type})"
     echo ""
-    echo "Следующие шаги:"
+    echo "Следующие шаги, Примеры:"
     echo "  клонирование:  qm clone ${template_id} <NEWID> --name <hostname> --full"
     echo "  запуск клона:  qm start <NEWID>"
 }
@@ -320,7 +411,8 @@ show_summary() {
   Disk storage: ${DISK_STORAGE} (фиксировано)
   CI user:      ${ci_username}
   Snippets:     ${SNIPPET_STORAGE} (фиксировано)
-  Образ:        ${IMAGE_DIR}/${IMAGE_NAME}
+  Образ:        ${IMAGE_DIR}/${image_name}
+  SSH-ключи:    ${SSH_KEYS_PATH}
 ========================================
 
 SUMMARY
@@ -339,8 +431,9 @@ MENU
     template_id="$(ask "VM ID шаблона" "$template_id")"
     template_name="$(ask "Имя шаблона" "$template_name")"
     ram_mb="$(ask "RAM (MB)" "$ram_mb")"
-    bios_type="$(ask "BIOS (ovmf=UEFI / seabios=Legacy)" "$bios_type")"
+    bios_type="$(ask "BIOS (ovmf / seabios)" "$bios_type")"
     ci_username="$(ask "Имя пользователя (Cloud-Init)" "$ci_username")"
+    image_name="$(ask "Имя файла образа (в ${IMAGE_DIR})" "$image_name")"
 
     log_ok "Параметры настроены."
     show_summary
@@ -351,7 +444,7 @@ main_menu() {
 
 ========================================
   Proxmox Ubuntu 24.04 Cloud-Init Template
-  (light: диски только на local-lvm)
+  (base: диски только на local-lvm)
 ========================================
   1) Создать с настройками по умолчанию
   2) Настроить вручную
