@@ -73,7 +73,7 @@ readonly TEMPLATE_NAME="centos10cloud-tmpl"
 # Железо
 readonly RAM_MB="4096"
 readonly CPU_CORES="2"
-readonly CPU_TYPE="x86-64-v3-AES"
+readonly CPU_TYPE="x86-64-v3"
 readonly OS_TYPE="l26"              # l26 = Linux 7.x - 2.6 Kernel
 readonly MACHINE_TYPE="q35"
 # BIOS: ovmf = UEFI (рекомендуется), seabios = Legacy BIOS
