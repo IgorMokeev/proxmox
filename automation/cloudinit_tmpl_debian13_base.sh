@@ -16,7 +16,7 @@
 #
 # ТРЕБОВАНИЯ И ПОДГОТОВКА:
 # Скачайте актуальный cloud-образ Debian 13 Trixie в директорию /root:
-# wget -b https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2
+# wget https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2
 
 # ОБЯЗАТЕЛЬНО: сгенерируйте SSH-ключи (если еще не созданы) и поместите 
 #    данные публичного ключа в файл: /root/configs/authorized_keys
@@ -82,7 +82,7 @@ readonly BIOS_TYPE="ovmf"
 # Cloud-init параметры
 readonly CI_USERNAME="la"
 readonly CI_TIMEZONE="Europe/Moscow"
-readonly SNIPPET_YAML="cloud-noble-server.yaml"
+readonly SNIPPET_YAML="cloud-trixie-server.yaml"
 
 # Пароль главного пользователя (хэш SHA-512)
 # Сгенерирован с помощью openssl passwd -6 'Pa$$w0rd'

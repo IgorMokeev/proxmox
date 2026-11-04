@@ -16,7 +16,7 @@
 #
 # ТРЕБОВАНИЯ И ПОДГОТОВКА:
 # 1. Скачайте актуальный cloud-образ Ubuntu в директорию /root:
-#    wget -b https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+#    wget https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
 # 2. Переименуйте скачанный файл в формат .qcow2:
 #    mv noble-server-cloudimg-amd64.img noble-server-cloudimg-amd64.qcow2
 # 3. ОБЯЗАТЕЛЬНО: сгенерируйте SSH-ключи (если еще не созданы) и поместите 
