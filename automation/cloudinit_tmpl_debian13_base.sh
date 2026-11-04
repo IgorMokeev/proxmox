@@ -82,7 +82,7 @@ readonly BIOS_TYPE="ovmf"
 # Cloud-init параметры
 readonly CI_USERNAME="la"
 readonly CI_TIMEZONE="Europe/Moscow"
-readonly SNIPPET_YAML="cloud-trixie-server.yaml"
+readonly SNIPPET_YAML="cloud-debian13.yaml"
 
 # Пароль главного пользователя (хэш SHA-512)
 # Сгенерирован с помощью openssl passwd -6 'Pa$$w0rd'
