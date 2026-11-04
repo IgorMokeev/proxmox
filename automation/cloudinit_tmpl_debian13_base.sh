@@ -1,0 +1,486 @@
+#!/bin/bash
+# ==============================================================================
+# Script:  cloudinit_tmpl_debian13_base.sh
+# Author:  Igor Mokeev / https://github.com/IgorMokeev
+# Date:    04.11.2026
+# Purpose: Упрощенная (base) версия создания Proxmox-шаблона 
+#          Cloud-Init Debian 13 Trixie.
+# ==============================================================================
+#
+# ОПИСАНИЕ:
+# Скрипт автоматизирует создание шаблона виртуальной машины в Proxmox VE 
+# на основе официального cloud-образа Debian 13 Trixie. Данная "base" версия 
+# оптимизирована для простоты и надежности за счет использования стандартных 
+# хранилищ Proxmox по умолчанию.
+#
+#
+# ТРЕБОВАНИЯ И ПОДГОТОВКА:
+# Скачайте актуальный cloud-образ Debian 13 Trixie в директорию /root:
+# wget -b https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2
+
+# ОБЯЗАТЕЛЬНО: сгенерируйте SSH-ключи (если еще не созданы) и поместите 
+#    данные публичного ключа в файл: /root/configs/authorized_keys
+#    Если файл отсутствует или пуст — скрипт завершится с ошибкой.
+#
+# НАСТРОЙКА ПОЛЬЗОВАТЕЛЯ (Cloud-Init):
+# Пользователь по умолчанию - la (local admin)
+# Пароль в VM по умолчанию - Pa$$w0rd
+# Чтобы задать свой пароль, сгенерируйте хэш SHA-512 и подставьте его
+# в переменную CI_PASS_HASH в разделе НАСТРОЙКИ (значение в одинарных кавычках):
+#   1. Выполните в CLI Proxmox: openssl passwd -6 'Ваш_Надежный_Пароль'
+#   2. Скопируйте вывод целиком (начинается с $6$...) и вставьте его:
+#        CI_PASS_HASH='$6$...ваш_хэш...'
+#   Одинарные кавычки обязательны, иначе bash раскроет символы $ в хэше.
+#
+# Альтернативный способ (рекомендуется, не светит хэш в скрипте):
+# положите хэш в файл /root/configs/cipass.hash и выставьте права:
+#   chmod 600 /root/configs/cipass.hash
+# Если файл существует и не пуст, он имеет приоритет над CI_PASS_HASH.
+#
+# ОГРАНИЧЕНИЯ (Осознанные, ради простоты и скорости):
+#   - Диски ВМ и шаблоны создаются ТОЛЬКО на хранилище 'local-lvm'.
+#   - Файлы snippets (cloud-init) сохраняются ТОЛЬКО на хранилище 'local'.
+#   - Не требуется выбор типа хранилища, формата диска (raw/qcow2) 
+#     или формата EFI-диска (на LVM-thin всё работает из коробки).
+# -------------------------------------------------
+#
+#   * Если вам требуется использование внешних или нестандартных хранилищ, 
+#     воспользуйтесь "ext" версией данного скрипта (учтите, что скорость 
+#     операций на внешних хранилищах может быть значительно ниже).
+#
+# ИСПОЛЬЗОВАНИЕ:
+#   ./cloudinit_tmpl_debian13_base.sh            # Интерактивный режим (с запросами)
+#   ./cloudinit_tmpl_debian13_base.sh --default  # Автоматический режим (все параметры по умолчанию)
+#
+# ==============================================================================
+
+# Жёсткий режим: ошибка / неустановленная переменная / ошибка пайпа — выход
+# -E: ERR/EXIT-ловушки наследуются функциями
+set -Eeuo pipefail
+
+# ============================================================
+# НАСТРОЙКИ (при необходимости правьте здесь)
+# ============================================================
+
+# Хранилища (фиксированы)
+readonly DISK_STORAGE="local-lvm"
+readonly SNIPPET_STORAGE="local"
+
+# Идентификация шаблона
+readonly TEMPLATE_ID=10133
+readonly TEMPLATE_NAME="debian13cloud-tmpl"
+
+# Железо
+readonly RAM_MB="4096"
+readonly CPU_CORES="2"
+readonly CPU_TYPE="x86-64-v2-AES"
+readonly OS_TYPE="l26"              # l26 = Linux 7.x - 2.6 Kernel
+readonly MACHINE_TYPE="q35"
+# BIOS: ovmf = UEFI (рекомендуется), seabios = Legacy BIOS
+readonly BIOS_TYPE="ovmf"
+
+# Cloud-init параметры
+readonly CI_USERNAME="la"
+readonly CI_TIMEZONE="Europe/Moscow"
+readonly SNIPPET_YAML="cloud-noble-server.yaml"
+
+# Пароль главного пользователя (хэш SHA-512)
+# Сгенерирован с помощью openssl passwd -6 'Pa$$w0rd'
+# (не readonly: может быть переопределён из файла CI_PASS_FILE)
+CI_PASS_HASH='$6$wBxZDyxv8VMoDBLY$ty9jnprnDcxS8LVQkWO4gePNOSEb.eGsezN7HYMIITSute6BWObZy9oOQtDBPrM3nHbx54Mn8rqkmTVtFrtoj0'
+readonly CI_PASS_FILE="/root/configs/cipass.hash"
+
+# Пути
+readonly IMAGE_DIR="/root"
+readonly IMAGE_NAME="debian-13-generic-amd64.qcow2"
+readonly SSH_KEYS_PATH="/root/configs/authorized_keys"
+
+# Сетевые настройки
+readonly NET_BRIDGE="vmbr0"
+readonly NET_FIREWALL="1"
+
+# Размер диска (прирост, GB)
+readonly DISK_GROW_GB="10"
+
+# ============================================================
+# ТЕКУЩИЕ РАБОЧИЕ ПЕРЕМЕННЫЕ (могут меняться интерактивно)
+# ============================================================
+template_id="$TEMPLATE_ID"
+template_name="$TEMPLATE_NAME"
+ram_mb="$RAM_MB"
+image_name="$IMAGE_NAME"  # имя образа можно переопределить
+bios_type="$BIOS_TYPE"
+ci_username="$CI_USERNAME"
+snippet_dir=""        # вычисляется в preflight_checks
+vm_created=0          # 1 = ВМ создана, но шаблон ещё не готов (для отката)
+
+# ============================================================
+# HELPER ФУНКЦИИ
+# ============================================================
+
+log_info()  { echo "ℹ️  $*"; }
+log_ok()    { echo "✅ $*"; }
+log_warn()  { echo "⚠️  $*"; }
+log_error() { echo "❌ $*"; }
+
+ask() {
+    local prompt="$1"
+    local default="$2"
+    local value
+    read -r -p "$prompt [$default]: " value
+    echo "${value:-$default}"
+}
+
+# Откат: если скрипт завершился с ошибкой после qm create — удаляем
+# недособранную ВМ, чтобы повторный запуск не упирался в "VM уже существует".
+cleanup_on_exit() {
+    local rc=$?
+    if [[ $rc -ne 0 && "$vm_created" == "1" ]]; then
+        log_warn "Ошибка (код ${rc}) — удаляю недособранную ВМ ${template_id}..."
+        qm destroy "$template_id" --purge --destroy-unreferenced-disks 1 \
+            || log_warn "Не удалось удалить ВМ ${template_id}, удалите вручную: qm destroy ${template_id} --purge"
+    fi
+    exit "$rc"
+}
+trap cleanup_on_exit EXIT
+
+# Проверяет, что хранилище существует и поддерживает тип контента.
+# Вывод сначала собирается в переменную: grep -q в пайпе под pipefail
+# может дать ложную ошибку из-за SIGPIPE.
+storage_has_content() {
+    local storage="$1"
+    local content="$2"
+    local list
+    list="$(pvesm status --content "$content" 2>/dev/null | awk 'NR>1 {print $1}')" || true
+    grep -qx "$storage" <<<"$list"
+}
+
+# ============================================================
+# PREFLIGHT CHECKS
+# ============================================================
+
+preflight_checks() {
+    log_info "Предварительные проверки..."
+
+    local image_path="${IMAGE_DIR}/${image_name}"
+    local keys_dir
+    keys_dir="$(dirname "$SSH_KEYS_PATH")"
+    local probe=""
+
+    # Root
+    if [[ $EUID -ne 0 ]]; then
+        log_error "Запустите скрипт от имени root."
+        exit 1
+    fi
+
+    # SSH-ключи (КРИТИЧНО: без них доступ к клонам невозможен)
+    if [[ ! -d "$keys_dir" || ! -s "$SSH_KEYS_PATH" ]]; then
+        cat <<ERR
+==========================================================
+❌ SSH-ключи не найдены: ${SSH_KEYS_PATH}
+----------------------------------------------------------
+Без публичного ключа скрипт не может создать рабочий шаблон.
+Создайте ключи и повторите запуск
+Пример:
+
+  1. Сгенерируйте пару ключей (если ещё нет):
+       ssh-keygen -t ed25519 -C "proxmox-template"
+  2. Создайте директорию и файл с публичным ключом:
+       mkdir -p ${keys_dir}
+       cat ~/.ssh/id_ed25519.pub >> ${SSH_KEYS_PATH}
+       chmod 600 ${SSH_KEYS_PATH}
+  3. Запустите скрипт повторно.
+==========================================================
+ERR
+        exit 1
+    fi
+    log_ok "SSH-ключи найдены: ${SSH_KEYS_PATH}"
+
+    # Хэш пароля: файл (если есть) имеет приоритет над значением в скрипте
+    if [[ -s "$CI_PASS_FILE" ]]; then
+        local perms
+        perms="$(stat -c '%a' "$CI_PASS_FILE")"
+        if [[ "$perms" != "600" ]]; then
+            log_warn "У ${CI_PASS_FILE} права ${perms}, рекомендуется 600."
+        fi
+        CI_PASS_HASH="$(tr -d '[:space:]' < "$CI_PASS_FILE")"
+        log_ok "Хэш пароля взят из ${CI_PASS_FILE}"
+    fi
+    if [[ ! "$CI_PASS_HASH" =~ ^\$6\$[^$]+\$[^$]+$ ]]; then
+        log_error "CI_PASS_HASH не похож на хэш SHA-512 (ожидается формат \$6\$salt\$hash)."
+        exit 1
+    fi
+
+    # Валидность ввода
+    if [[ ! "$template_id" =~ ^[0-9]+$ ]]; then
+        log_error "VM ID должен быть числом, получено: '${template_id}'"
+        exit 1
+    fi
+    if (( template_id < 100 )); then
+        log_error "VM ID должен быть >= 100, получено: '${template_id}'"
+        exit 1
+    fi
+    if [[ ! "$template_name" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]]; then
+        log_error "Имя шаблона должно быть валидным DNS-именем (буквы, цифры, '-', '.'), получено: '${template_name}'"
+        exit 1
+    fi
+    if [[ ! "$ram_mb" =~ ^[0-9]+$ ]]; then
+        log_error "RAM (MB) должна быть числом, получено: '${ram_mb}'"
+        exit 1
+    fi
+    if [[ ! "$ci_username" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+        log_error "Недопустимое имя пользователя Cloud-Init: '${ci_username}'"
+        exit 1
+    fi
+    if [[ "$bios_type" != "ovmf" && "$bios_type" != "seabios" ]]; then
+        log_error "BIOS должен быть 'ovmf' или 'seabios', получено: '${bios_type}'"
+        exit 1
+    fi
+
+    # Образ
+    if [[ ! -f "$image_path" ]]; then
+        log_error "Образ не найден: ${image_path}"
+        echo "Скачайте: wget https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2"
+        exit 1
+    fi
+    log_ok "Образ найден: ${image_path}"
+
+    # VMID не занят
+    if qm status "$template_id" &>/dev/null; then
+        log_error "VM ${template_id} уже существует. Выберите другой ID."
+        exit 1
+    fi
+    log_ok "VM ID ${template_id} свободен."
+
+    # Хранилище дисков существует и поддерживает образы дисков
+    if ! storage_has_content "$DISK_STORAGE" images; then
+        log_error "Хранилище '${DISK_STORAGE}' не найдено или не поддерживает тип контента 'Disk image'."
+        echo "На установках Proxmox с ZFS/ext4 хранилища local-lvm может не быть —"
+        echo "в этом случае используйте ext-версию скрипта."
+        exit 1
+    fi
+    log_ok "Хранилище дисков '${DISK_STORAGE}' доступно."
+
+    # Директория snippets на local доступна
+    #    (pvesm path требует полный том snippets/<файл>, просим пробный файл)
+    probe="$(pvesm path "${SNIPPET_STORAGE}:snippets/.probe" 2>/dev/null || true)"
+    if [[ -n "$probe" ]]; then
+        snippet_dir="$(dirname "$probe")"
+    fi
+    if [[ -z "$snippet_dir" || ! -d "$snippet_dir" ]]; then
+        cat <<ERR
+==========================================================
+❌ На хранилище '${SNIPPET_STORAGE}' не включён тип контента Snippets!
+----------------------------------------------------------
+Выполните в GUI Proxmox:
+  1. Datacenter -> Storage -> ${SNIPPET_STORAGE} -> Edit
+  2. В поле 'Content' добавьте 'Snippets'.
+  3. Сохраните и запустите скрипт повторно.
+==========================================================
+ERR
+        exit 1
+    fi
+    log_ok "Snippets-директория: ${snippet_dir}"
+}
+
+# ============================================================
+# СОЗДАНИЕ VENDOR-СНИППЕТА
+# ============================================================
+
+create_snippet_yaml() {
+    local snippet_file="${snippet_dir}/${SNIPPET_YAML}"
+    log_info "Создание vendor-snippet: ${snippet_file}..."
+
+    cat > "$snippet_file" <<EOF
+#cloud-config
+# Единый vendor-data для cloud-init шаблона
+
+# Часовой пояс (в образе по умолчанию UTC)
+timezone: ${CI_TIMEZONE}
+
+# Установка qemu-guest-agent при первом старте каждого клона
+runcmd:
+  - apt-get update
+  - apt-get install -y qemu-guest-agent
+  - systemctl enable --now qemu-guest-agent
+EOF
+
+    log_ok "Snippet создан."
+}
+
+# ============================================================
+# СОЗДАНИЕ ВМ И ШАБЛОНА
+# ============================================================
+
+create_template() {
+    log_info "Начало создания шаблона VM ${template_id} (${template_name})..."
+    local image_path="${IMAGE_DIR}/${image_name}"
+
+    # 1. Базовая ВМ
+    log_info "Создание базовой ВМ (BIOS: ${bios_type})..."
+    qm create "$template_id" \
+      --name "$template_name" \
+      --memory "$ram_mb" \
+      --cores "$CPU_CORES" \
+      --cpu "$CPU_TYPE" \
+      --net0 "virtio,bridge=${NET_BRIDGE},firewall=${NET_FIREWALL}" \
+      --machine "$MACHINE_TYPE" \
+      --ostype "$OS_TYPE" \
+      --bios "$bios_type" \
+      --scsihw virtio-scsi-single \
+      --serial0 socket \
+      --vga serial0 \
+      --agent enabled=1
+    vm_created=1   # с этого момента при ошибке сработает откат
+
+    # 2. EFI-диск только для UEFI (на lvm-thin формат не важен — снапшоты
+    #    делает само хранилище)
+    if [[ "$bios_type" == "ovmf" ]]; then
+        log_info "Настройка UEFI: создание EFI-диска..."
+        qm set "$template_id" --efidisk0 "${DISK_STORAGE}:1,efitype=4m,ms-cert=2023k,pre-enrolled-keys=1"
+    else
+        log_warn "Выбран Legacy BIOS (seabios): EFI-диск не создаётся."
+    fi
+
+    # 3. CD-ROM (опционально, для отладки)
+    qm set "$template_id" --ide2 none,media=cdrom
+
+    # 4. Импорт образа
+    log_info "Импорт диска..."
+    qm importdisk "$template_id" "$image_path" "$DISK_STORAGE"
+
+    # 5. Подключение импортированного диска как scsi0.
+    #    Имя тома читаем из ключа unused0 конфига — надёжно при любом BIOS
+    #    (с efidisk и без).
+    local imported_vol
+    imported_vol="$(qm config "$template_id" | sed -n 's/^unused0: //p')"
+    if [[ -z "$imported_vol" ]]; then
+        log_error "Не удалось определить импортированный диск (unused0 не найден в конфиге)."
+        exit 1
+    fi
+    log_info "Импортированный том: ${imported_vol}"
+    qm set "$template_id" --scsi0 "${imported_vol},discard=on,ssd=1,iothread=1"
+
+    # 6. Порядок загрузки
+    qm set "$template_id" --boot order=scsi0
+
+    # 7. Cloud-Init диск
+    qm set "$template_id" --scsi1 "${DISK_STORAGE}:cloudinit"
+
+    # 8. Расширение диска
+    log_info "Расширение диска на +${DISK_GROW_GB}G..."
+    qm resize "$template_id" scsi0 "+${DISK_GROW_GB}G"
+
+    # 9. Cloud-Init параметры
+    log_info "Настройка Cloud-Init..."
+    qm set "$template_id" --ciuser "$ci_username"
+    qm set "$template_id" --cipassword "$CI_PASS_HASH"
+    qm set "$template_id" --ciupgrade 0
+    qm set "$template_id" --ipconfig0 ip=dhcp
+    qm set "$template_id" --sshkeys "$SSH_KEYS_PATH"
+    qm set "$template_id" --cicustom "vendor=${SNIPPET_STORAGE}:snippets/${SNIPPET_YAML}"
+
+    # 10. Превращение в шаблон
+    log_info "Конвертация в шаблон..."
+    qm template "$template_id"
+    vm_created=0   # шаблон готов, откат больше не нужен
+
+    log_ok "Шаблон '${template_name}' (ID: ${template_id}) успешно создан! (BIOS: ${bios_type})"
+    echo ""
+    echo "Следующие шаги, Примеры:"
+    echo "  клонирование:  qm clone ${template_id} <NEWID> --name <hostname> --full"
+    echo "  запуск клона:  qm start <NEWID>"
+}
+
+# ============================================================
+# ИНТЕРАКТИВНОЕ МЕНЮ
+# ============================================================
+
+show_summary() {
+    cat <<SUMMARY
+
+========================================
+  Итоговые параметры шаблона
+========================================
+  VM ID:        ${template_id}
+  Имя:          ${template_name}
+  RAM:          ${ram_mb} MB
+  BIOS:         ${bios_type} $([ "$bios_type" == "ovmf" ] && echo "(UEFI)" || echo "(Legacy)")
+  Disk storage: ${DISK_STORAGE} (фиксировано)
+  CI user:      ${ci_username}
+  Snippets:     ${SNIPPET_STORAGE} (фиксировано)
+  Образ:        ${IMAGE_DIR}/${image_name}
+  SSH-ключи:    ${SSH_KEYS_PATH}
+========================================
+
+SUMMARY
+}
+
+interactive_config() {
+    cat <<MENU
+
+========================================
+  Настройка параметров шаблона
+  (ENTER = значение по умолчанию)
+========================================
+
+MENU
+
+    template_id="$(ask "VM ID шаблона" "$template_id")"
+    template_name="$(ask "Имя шаблона" "$template_name")"
+    ram_mb="$(ask "RAM (MB)" "$ram_mb")"
+    bios_type="$(ask "BIOS (ovmf / seabios)" "$bios_type")"
+    ci_username="$(ask "Имя пользователя (Cloud-Init)" "$ci_username")"
+    image_name="$(ask "Имя файла образа (в ${IMAGE_DIR})" "$image_name")"
+
+    log_ok "Параметры настроены."
+    show_summary
+}
+
+main_menu() {
+    cat <<MENU
+
+========================================
+  Proxmox Debian 13 Trixie Cloud-Init Template
+  (base: диски только на local-lvm)
+========================================
+  1) Создать с настройками по умолчанию
+  2) Настроить вручную
+  3) Выход
+========================================
+
+MENU
+
+    read -r -p "Выберите опцию: " choice
+    case "$choice" in
+        1) log_info "Запуск с настройками по умолчанию..."
+           show_summary ;;
+        2) interactive_config ;;
+        3) log_info "Выход."; exit 0 ;;
+        *) log_error "Неверный выбор."; exit 1 ;;
+    esac
+}
+
+# ============================================================
+# ГЛАВНАЯ ТОЧКА ВХОДА
+# ============================================================
+
+main() {
+    if [[ $EUID -ne 0 ]]; then
+        log_error "Запустите скрипт от имени root."
+        exit 1
+    fi
+
+    if [[ $# -eq 0 ]]; then
+        main_menu
+    elif [[ "${1:-}" != "--default" ]]; then
+        echo "Использование: $0 [--default]"
+        exit 1
+    fi
+
+    preflight_checks
+    create_snippet_yaml
+    create_template
+}
+
+main "$@"

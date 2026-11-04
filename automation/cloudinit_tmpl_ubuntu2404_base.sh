@@ -297,7 +297,7 @@ create_snippet_yaml() {
 #cloud-config
 # Единый vendor-data для cloud-init шаблона
 
-# Часовой пояс (в образе Ubuntu по умолчанию UTC)
+# Часовой пояс (в образе по умолчанию UTC)
 timezone: ${CI_TIMEZONE}
 
 # Установка qemu-guest-agent при первом старте каждого клона
