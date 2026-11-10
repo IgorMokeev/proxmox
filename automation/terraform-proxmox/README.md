@@ -1,9 +1,13 @@
 
 Terraform + Proxmox: шпаргалка
+
 На основании созданных proxmox cloud init шаблонов, автоматизируем создание стендов виртуальных машин
 
 Пример установки Terraform на сервер debian13
+
 скачиваем https://developer.hashicorp.com/terraform/install Binary download AMD64 terraform_1.17.1_linux_amd64.zip
+
+```
 mkdir terraform-proxmox
 mv terraform_1.17.1_linux_amd64.zip terraform-proxmox/
 sudo apt update && sudo apt install -y curl unzip
@@ -14,10 +18,12 @@ sudo mv terraform /usr/local/bin/
 Проверка:
 command -v terraform
 terraform version
+```
 
 Создаем Terraform зеркало на Yandex
 nano ~/.terraformrc
 
+```
 provider_installation {
   network_mirror {
     url = "https://terraform-mirror.yandexcloud.net/"
@@ -27,6 +33,7 @@ provider_installation {
     exclude = ["registry.terraform.io/*/*"]
   }
 }
+```
 
 Выбираем Terraform провайдер для proxmox (он будет по умолчанию в конфигурациях)
 выбираем provider https://registry.terraform.io/
