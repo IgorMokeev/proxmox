@@ -1,0 +1,33 @@
+# =====================================================================
+# terraform.tfvars.example — ОБРАЗЕЦ ВАШИХ НАСТРОЕК
+# ---------------------------------------------------------------------
+#   cp terraform.tfvars.example terraform.tfvars
+#   nano terraform.tfvars
+# Файл terraform.tfvars содержит токен — не публикуйте его.
+# =====================================================================
+
+# --- Proxmox ---
+pm_endpoint  = "https://10.1.1.20:8006/"
+pm_node      = "archimedes"
+pm_api_token = "terraform@pve!tf=ВСТАВЬТЕ-СЕКРЕТ-ТОКЕНА"
+
+# --- Шаблон (Debian/Ubuntu!) ---
+template_id = 11243 # Ubuntu 24.04 (Debian 10133)
+
+# --- ID ВМ: master = first_vm_id, worker'ы = +1 и +2 ---
+first_vm_id = 5201
+
+# --- IP-адреса (пул 10.1.1.80 - 10.1.1.108) ---
+master_ip  = "10.1.1.90/24"
+worker1_ip = "10.1.1.91/24"
+worker2_ip = "10.1.1.92/24"
+
+# --- Сеть ---
+gateway     = "10.1.1.1"
+dns_servers = ["10.1.1.1"]
+
+# --- Ресурсы (по желанию) ---
+# master_cores     = 2
+# master_memory_mb = 4096
+# worker_cores     = 2
+# worker_memory_mb = 3072

@@ -2,7 +2,7 @@
 # ==============================================================================
 # Script:  cloudinit_tmpl_alt11_base.sh
 # Author:  Igor Mokeev / https://github.com/IgorMokeev
-# Date:    04.11.2026
+# Date:    10.11.2026
 # Purpose: Упрощенная (base) версия создания Proxmox-шаблона 
 #          Cloud-Init ALT 11 server.
 # ==============================================================================
@@ -25,7 +25,7 @@
 #
 # НАСТРОЙКА ПОЛЬЗОВАТЕЛЯ (Cloud-Init):
 # Пользователь по умолчанию - la (local admin)
-# Пароль в VM по умолчанию - Pa$$w0rd
+# Пароль в VM по умолчанию - Pa$$w0rd (Для домашней лабы, но лучше сменить)
 # Чтобы задать свой пароль, сгенерируйте хэш SHA-512 и подставьте его
 # в переменную CI_PASS_HASH в разделе НАСТРОЙКИ (значение в одинарных кавычках):
 #   1. Выполните в CLI Proxmox: openssl passwd -6 'Ваш_Надежный_Пароль'
@@ -70,6 +70,8 @@ readonly SNIPPET_STORAGE="local"
 # Идентификация шаблона
 readonly TEMPLATE_ID=150113
 readonly TEMPLATE_NAME="alt11cloud-tmpl"
+# Тег Proxmox (отображается в GUI; несколько тегов — через ';')
+readonly TEMPLATE_TAGS="cloud_tmpl"
 
 # Железо
 readonly RAM_MB="4096"
@@ -101,7 +103,7 @@ readonly NET_BRIDGE="vmbr0"
 readonly NET_FIREWALL="1"
 
 # Размер диска (прирост, GB)
-readonly DISK_GROW_GB="20"
+readonly DISK_GROW_GB="15"
 
 # ============================================================
 # ТЕКУЩИЕ РАБОЧИЕ ПЕРЕМЕННЫЕ (могут меняться интерактивно)
@@ -321,6 +323,7 @@ create_template() {
     log_info "Создание базовой ВМ (BIOS: ${bios_type})..."
     qm create "$template_id" \
       --name "$template_name" \
+      --tags "$TEMPLATE_TAGS" \
       --memory "$ram_mb" \
       --cores "$CPU_CORES" \
       --cpu "$CPU_TYPE" \
@@ -405,6 +408,7 @@ show_summary() {
 ========================================
   VM ID:        ${template_id}
   Имя:          ${template_name}
+  Тег:          ${TEMPLATE_TAGS}
   RAM:          ${ram_mb} MB
   BIOS:         ${bios_type} $([ "$bios_type" == "ovmf" ] && echo "(UEFI)" || echo "(Legacy)")
   Disk storage: ${DISK_STORAGE} (фиксировано)

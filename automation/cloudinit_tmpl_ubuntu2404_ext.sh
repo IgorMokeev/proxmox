@@ -2,7 +2,7 @@
 # ==============================================================================
 # Script:  cloudinit_tmpl_ubuntu2404_ext.sh
 # Author:  Igor Mokeev / https://github.com/IgorMokeev
-# Date:    04.11.2026
+# Date:    10.11.2026
 # Purpose: Extended (ext) версия создания Proxmox-шаблона 
 #          Cloud-Init Ubuntu Noble (24.04 LTS).
 # ==============================================================================
@@ -27,7 +27,7 @@
 #
 # НАСТРОЙКА ПОЛЬЗОВАТЕЛЯ (Cloud-Init):
 # Пользователь по умолчанию - la (local admin)
-# Пароль в VM по умолчанию - Pa$$w0rd
+# Пароль в VM по умолчанию - Pa$$w0rd (Для домашней лабы, но лучше сменить)
 # Чтобы задать свой пароль, сгенерируйте хэш SHA-512 и подставьте его
 # в переменную CI_PASS_HASH в разделе НАСТРОЙКИ (значение в одинарных кавычках):
 #   1. Выполните в CLI Proxmox: openssl passwd -6 'Ваш_Надежный_Пароль'
@@ -87,6 +87,8 @@ readonly SNIPPET_STORAGE="local"
 # Идентификация шаблона
 readonly TEMPLATE_ID=11243
 readonly TEMPLATE_NAME="ubuntu24cloud-tmpl"
+# Тег Proxmox (отображается в GUI; несколько тегов — через ';')
+readonly TEMPLATE_TAGS="cloud_tmpl"
 
 # Железо
 readonly RAM_MB="4096"
@@ -119,7 +121,7 @@ readonly NET_BRIDGE="vmbr0"
 readonly NET_FIREWALL="1"
 
 # Размер диска (прирост, GB)
-readonly DISK_GROW_GB="10"
+readonly DISK_GROW_GB="5"
 
 # Формат основного диска: auto | raw | qcow2
 #   auto   = qcow2 для файловых хранилищ (dir/nfs/cifs/cephfs), raw для блочных
@@ -418,6 +420,7 @@ create_template() {
     log_info "Создание базовой ВМ (BIOS: ${bios_type})..."
     qm create "$template_id" \
       --name "$template_name" \
+      --tags "$TEMPLATE_TAGS" \
       --memory "$ram_mb" \
       --cores "$CPU_CORES" \
       --cpu "$CPU_TYPE" \
@@ -516,6 +519,7 @@ show_summary() {
 ========================================
   VM ID:        ${template_id}
   Имя:          ${template_name}
+  Тег:          ${TEMPLATE_TAGS}
   RAM:          ${ram_mb} MB
   BIOS:         ${bios_type} $([ "$bios_type" == "ovmf" ] && echo "(UEFI)" || echo "(Legacy)")
   Disk storage: ${disk_storage}
